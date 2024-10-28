@@ -1,0 +1,117 @@
+// server.js
+const express = require('express');
+const http = require('http');
+const socketIo = require('socket.io');
+const { EventHubConsumerClient } = require('@azure/event-hubs');
+require('dotenv').config();
+const Chart = require('chart.js'); // Adicione a biblioteca Chart.js
+
+const app = express();
+const server = http.createServer(app);
+const io = socketIo(server);
+
+const iotHubConnectionString = process.env.IotHubConnectionString;
+const eventHubConsumerGroup = process.env.EventHubConsumerGroup;
+
+// Configurar o Event Hub Client
+const client = new EventHubConsumerClient(eventHubConsumerGroup, iotHubConnectionString);
+
+app.get('/', (req, res) => {
+    res.send(`
+        <!DOCTYPE html>
+        <html lang="pt-BR">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Visualização de Dados IoT</title>
+            <script src="/socket.io/socket.io.js"></script>
+        </head>
+        <body>
+            <h1>Dados de Temperatura e Umidade</h1>
+            <div>
+                <canvas id="dataChart" width="400" height="200"></canvas>
+            </div>
+            <script>
+                const ctx = document.getElementById('dataChart').getContext('2d');
+                let chart;
+
+                function updateChart(data) {
+                    if (!chart) {
+                        chart = new Chart(ctx, {
+                            type: 'line',
+                            data: {
+                                labels: [], // Adicione etiquetas (timestamps ou IDs de dispositivos)
+                                datasets: [{
+                                    label: 'Temperatura',
+                                    data: [],
+                                    borderColor: 'rgba(255, 99, 132, 1)',
+                                    borderWidth: 1
+                                }, {
+                                    label: 'Umidade',
+                                    data: [],
+                                    borderColor: 'rgba(54, 162, 235, 1)',
+                                    borderWidth: 1
+                                }]
+                            },
+                            options: {
+                                scales: {
+                                    y: {
+                                        beginAtZero: true
+                                    }
+                                }
+                            }
+                        });
+                    }
+
+                    // Atualizar os dados do gráfico
+                    chart.data.labels.push(new Date().toLocaleTimeString());
+                    chart.data.datasets[0].data.push(data.temperature); // Adicione a temperatura
+                    chart.data.datasets[1].data.push(data.humidity);    // Adicione a umidade
+
+                    // Manter apenas os últimos 50 pontos
+                    if (chart.data.labels.length > 50) {
+                        chart.data.labels.shift();
+                        chart.data.datasets[0].data.shift();
+                        chart.data.datasets[1].data.shift();
+                    }
+
+                    chart.update();
+                }
+
+                const socket = io();
+
+                socket.on('data', (data) => {
+                    console.log('Dados recebidos:', data);
+                    // Chame a função para atualizar o gráfico
+                    updateChart(data);
+                });
+            </script>
+        </body>
+        </html>
+    `);
+});
+
+// Iniciar o servidor
+server.listen(3000, () => {
+    console.log('Servidor rodando em http://localhost:3000');
+});
+
+// Ler eventos do Event Hub
+const receiveMessages = async () => {
+    const subscription = client.subscribe({
+        processEvents: async (events, context) => {
+            for (const event of events) {
+                console.log(event);
+                // Enviar os dados para o cliente conectado
+                io.emit('data', event.body);
+            }
+        },
+        processError: async (err, context) => {
+            console.error(`Erro: ${err}`);
+        },
+    });
+};
+
+receiveMessages().catch((err) => {
+    console.error('Erro ao receber mensagens:', err);
+});
